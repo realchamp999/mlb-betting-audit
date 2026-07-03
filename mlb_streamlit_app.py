@@ -109,27 +109,20 @@ def fractional_kelly(win_prob, dec_odds, frac=KELLY_FRAC):
 # ============================================================
 @st.cache_data(ttl=3600)
 def fetch_siera(season):
-    """Pull pitcher SIERA directly from FanGraphs leaderboard API."""
-    url = (
-        f"https://www.fangraphs.com/api/leaders/major-league/data"
-        f"?age=&pos=all&stats=pit&lg=all&qual=20&type=1"
-        f"&season={season}&season1={season}&ind=0&team=0"
-        f"&rost=0&players=0&startdate=&enddate=&month=0&pageitems=500&pagenum=1"
-    )
+    """Pull pitcher SIERA via pybaseball (scrapes FanGraphs reliably)."""
     try:
-        r = requests.get(url, timeout=15,
-                         headers={"User-Agent": "Mozilla/5.0"})
-        data = r.json()
-        rows = data.get("data", [])
-        if not rows:
-            return {}, "No data returned from FanGraphs"
+        import pybaseball
+        pybaseball.cache.enable()
+        df = pybaseball.pitching_stats(season, qual=20)
+        if df is None or df.empty:
+            return {}, "❌ pybaseball returned no data"
         siera_map = {}
-        for row in rows:
-            name = row.get("PlayerName", "") or row.get("Name", "")
-            siera = row.get("SIERA") or row.get("siera")
+        for _, row in df.iterrows():
+            name  = str(row.get("Name", "")).strip()
+            siera = row.get("SIERA")
             if name and siera is not None:
                 try:
-                    last = name.strip().split()[-1].lower()
+                    last = name.split()[-1].lower()
                     siera_map[last] = float(siera)
                 except:
                     pass
