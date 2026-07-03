@@ -110,32 +110,25 @@ def fractional_kelly(win_prob, dec_odds, frac=KELLY_FRAC):
 @st.cache_data(ttl=3600)
 def fetch_siera(season):
     """
-    Pull pitcher stats from MLB Stats API and compute a SIERA proxy.
-
-    SIERA is primarily driven by K%, BB%, and HR/FB rate.
-    We approximate it using the formula:
-        SIERA_proxy = 6.145 - 16.986*K% + 11.434*BB% + 1.858*HR9 - 1.234*(K%-BB%)
-    which closely mirrors the published SIERA coefficients.
+    Pull pitcher stats from MLB Stats API and compute FIP.
+    FIP = (13*HR + 3*(BB+HBP) - 2*K) / IP + 3.10
+    FIP_constant ~3.10 for recent seasons (sets league FIP = league ERA).
+    Correlates 0.92+ with SIERA and uses identical inputs.
     Minimum 20 IP to qualify.
     """
+    FIP_CONSTANT = 3.10
+
     try:
         url = (
-            f"https://statsapi.mlb.com/api/v1/stats/leaders"
-            f"?leaderCategories=earnedRunAverage&season={season}"
-            f"&sportId=1&statGroup=pitching&gameType=R"
-            f"&limit=500&hydrate=person"
-        )
-        # Use the player season stats endpoint instead for full stat lines
-        url2 = (
             f"https://statsapi.mlb.com/api/v1/stats"
             f"?stats=season&season={season}&sportId=1"
-            f"&group=pitching&gameType=R&limit=500"
+            f"&group=pitching&gameType=R&limit=1000"
             f"&playerPool=All"
         )
-        r = requests.get(url2, timeout=15).json()
+        r = requests.get(url, timeout=15).json()
         splits = r.get("stats", [{}])[0].get("splits", [])
 
-        siera_map = {}
+        fip_map = {}
         for s in splits:
             stat   = s.get("stat", {})
             person = s.get("player", {})
@@ -143,9 +136,9 @@ def fetch_siera(season):
             if not name:
                 continue
 
+            # Parse innings pitched ("64.2" = 64⅔ innings)
             ip_str = stat.get("inningsPitched", "0")
             try:
-                # IP stored as "64.2" meaning 64 and 2/3 innings
                 parts = str(ip_str).split(".")
                 ip = float(parts[0]) + (float(parts[1]) / 3 if len(parts) > 1 else 0)
             except:
@@ -155,35 +148,24 @@ def fetch_siera(season):
                 continue
 
             try:
-                bf   = float(stat.get("battersFaced", 1) or 1)
-                so   = float(stat.get("strikeOuts",   0) or 0)
-                bb   = float(stat.get("baseOnBalls",  0) or 0)
-                hbp  = float(stat.get("hitByPitch",   0) or 0)
-                hr   = float(stat.get("homeRuns",     0) or 0)
+                so  = float(stat.get("strikeOuts",  0) or 0)
+                bb  = float(stat.get("baseOnBalls", 0) or 0)
+                hbp = float(stat.get("hitByPitch",  0) or 0)
+                hr  = float(stat.get("homeRuns",    0) or 0)
 
-                k_pct  = so  / bf if bf > 0 else 0.20
-                bb_pct = (bb + hbp) / bf if bf > 0 else 0.08
-                hr9    = (hr / ip * 9) if ip > 0 else 1.2
-
-                # SIERA approximation
-                siera = (6.145
-                         - 16.986 * k_pct
-                         + 11.434 * bb_pct
-                         +  1.858 * hr9
-                         -  1.234 * (k_pct - bb_pct))
-
-                # Clamp to realistic range
-                siera = max(2.0, min(siera, 8.0))
+                fip = (13*hr + 3*(bb+hbp) - 2*so) / ip + FIP_CONSTANT
+                fip = max(1.50, min(fip, 7.50))   # clamp to realistic range
 
                 last = name.strip().split()[-1].lower()
-                siera_map[last] = round(siera, 2)
+                fip_map[last] = round(fip, 2)
             except:
                 continue
 
-        if not siera_map:
+        if not fip_map:
             return {}, "❌ MLB Stats API returned no pitcher data"
 
-        return siera_map, f"✅ SIERA proxy loaded for {len(siera_map)} pitchers (MLB Stats API)"
+        avg_fip = sum(fip_map.values()) / len(fip_map)
+        return fip_map, f"✅ FIP loaded for {len(fip_map)} pitchers — league avg {avg_fip:.2f} (MLB Stats API)"
     except Exception as e:
         return {}, f"❌ Pitcher stat fetch failed: {e}"
 
@@ -534,24 +516,36 @@ with tab1:
 
         # Display results
         if results:
-            # Separate into tiers
-            strong = [r for r in results if "STRONG" in str(r.get("side_signal","")) or "STRONG" in str(r.get("tot_signal",""))]
-            lean   = [r for r in results if "LEAN"   in str(r.get("side_signal","")) or "LEAN"   in str(r.get("tot_signal",""))]
-            watch  = [r for r in results if "WATCH"  in str(r.get("side_signal","")) or "WATCH"  in str(r.get("tot_signal",""))]
-            other  = [r for r in results if r not in strong + lean + watch and r.get("status") == "✅"]
-            skipped = [r for r in results if r.get("status") != "✅"]
+            # Assign each game to exactly ONE tier bucket (highest tier wins)
+            # Tier rank: STRONG=3, LEAN=2, WATCH=1, none=0
+            def tier_rank(r):
+                signals = str(r.get("side_signal","")) + str(r.get("tot_signal",""))
+                if "STRONG" in signals: return 3
+                if "LEAN"   in signals: return 2
+                if "WATCH"  in signals: return 1
+                return 0
+
+            completed = [r for r in results if r.get("status") == "✅"]
+            skipped   = [r for r in results if r.get("status") != "✅"]
+
+            strong = [r for r in completed if tier_rank(r) == 3]
+            lean   = [r for r in completed if tier_rank(r) == 2]
+            watch  = [r for r in completed if tier_rank(r) == 1]
+            other  = [r for r in completed if tier_rank(r) == 0]
+
+            display_cols = ["matchup","pitchers","dk_ml","ml_edge","total","tot_edge","stake","side_signal","tot_signal"]
 
             if strong:
                 st.subheader("🔥🔥 STRONG Plays")
-                st.dataframe(pd.DataFrame(strong)[["matchup","pitchers","dk_ml","ml_edge","total","tot_edge","stake","side_signal","tot_signal"]], use_container_width=True)
+                st.dataframe(pd.DataFrame(strong)[display_cols], use_container_width=True)
 
             if lean:
                 st.subheader("🔥 LEAN Plays")
-                st.dataframe(pd.DataFrame(lean)[["matchup","pitchers","dk_ml","ml_edge","total","tot_edge","stake","side_signal","tot_signal"]], use_container_width=True)
+                st.dataframe(pd.DataFrame(lean)[display_cols], use_container_width=True)
 
             if watch:
                 st.subheader("📊 WATCH (track only)")
-                st.dataframe(pd.DataFrame(watch)[["matchup","pitchers","dk_ml","ml_edge","total","tot_edge","side_signal","tot_signal"]], use_container_width=True)
+                st.dataframe(pd.DataFrame(watch)[display_cols], use_container_width=True)
 
             if other:
                 with st.expander(f"No signal — {len(other)} games"):
