@@ -211,7 +211,7 @@ def fetch_team_bullpen(season):
         return result
     except: return {}
 
-@st.cache_data(ttl=900)
+@st.cache_data(ttl=600)
 def fetch_odds(api_key, book):
     try:
         url = (f"https://api.the-odds-api.com/v4/sports/baseball_mlb/odds/"
@@ -233,11 +233,19 @@ def fetch_odds(api_key, book):
                     over  = next((o for o in mkt['outcomes'] if o['name'] == 'Over'),  None)
                     under = next((o for o in mkt['outcomes'] if o['name'] == 'Under'), None)
                     if over and under:
-                        total_data[(h_abbr, a_abbr)] = {
-                            "line": over['point'],
-                            "over_dec": over['price'],
-                            "under_dec": under['price'],
-                        }
+                        line = over['point']
+                        # Sanity check: full game MLB totals are always between 5.5 and 16.0
+                        # Values outside this range indicate a first-5 or alternate market
+                        if 5.5 <= line <= 16.0:
+                            # Only store if we don't have one yet, or this line looks more like
+                            # a full game total (closer to 8.5 league avg)
+                            existing = total_data.get((h_abbr, a_abbr))
+                            if not existing or abs(line - 8.5) < abs(existing['line'] - 8.5):
+                                total_data[(h_abbr, a_abbr)] = {
+                                    "line": line,
+                                    "over_dec": over['price'],
+                                    "under_dec": under['price'],
+                                }
         return ml_data, total_data
     except: return {}, {}
 
@@ -386,7 +394,14 @@ tab1, tab2, tab3 = st.tabs(["🎯 Today's Picks", "📈 Backtest Log", "✅ Upda
 # TAB 1: TODAY'S PICKS
 # ──────────────────────────────────────────────
 with tab1:
-    if st.button("🔄 Run Today's Analysis", type="primary", use_container_width=True):
+    col1, col2 = st.columns([3,1])
+    run_btn     = col1.button("🔄 Run Today's Analysis", type="primary", use_container_width=True)
+    refresh_btn = col2.button("♻️ Clear Cache", use_container_width=True)
+    if refresh_btn:
+        st.cache_data.clear()
+        st.success("Cache cleared — re-run analysis for fresh data")
+        st.stop()
+    if run_btn:
         with st.spinner("Fetching data..."):
             siera_map, siera_msg = fetch_siera(SEASON)
             team_offense = fetch_team_offense(SEASON)
