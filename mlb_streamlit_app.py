@@ -611,26 +611,8 @@ with tab2:
                 "Total Win%":  f"{tw/tt_total*100:.0f}%" if tt_total > 0 else "—",
             })
 
-        def color_tier(val):
-            colors = {"STRONG": "background-color:#ffe0cc",
-                      "LEAN":   "background-color:#fff9cc",
-                      "WATCH":  "background-color:#e8e8e8"}
-            return colors.get(val, "")
-
-        def color_result(val):
-            if "%" not in str(val): return ""
-            try:
-                pct = float(str(val).replace("%",""))
-                if pct >= 55: return "color:green;font-weight:bold"
-                if pct <= 45: return "color:red;font-weight:bold"
-            except: pass
-            return ""
-
         sum_df = pd.DataFrame(summary_rows)
-        styled = (sum_df.style
-                  .map(color_tier,   subset=["Tier"])
-                  .map(color_result, subset=["Side Win%","Total Win%"]))
-        st.dataframe(styled, use_container_width=True, hide_index=True)
+        st.dataframe(sum_df, use_container_width=True, hide_index=True)
 
         st.subheader("📋 Full Log")
         # Color result columns
