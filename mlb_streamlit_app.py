@@ -627,12 +627,16 @@ with tab2:
             return ""
 
         sum_df = pd.DataFrame(summary_rows)
-        st.dataframe(
-            sum_df.style
-                .applymap(color_tier, subset=["Tier"])
-                .applymap(color_result, subset=["Side Win%","Total Win%"]),
-            use_container_width=True, hide_index=True
-        )
+        # pandas >=2.1 renamed applymap to map
+        try:
+            styled = (sum_df.style
+                      .map(color_tier, subset=["Tier"])
+                      .map(color_result, subset=["Side Win%","Total Win%"]))
+        except AttributeError:
+            styled = (sum_df.style
+                      .applymap(color_tier, subset=["Tier"])
+                      .applymap(color_result, subset=["Side Win%","Total Win%"]))
+        st.dataframe(styled, use_container_width=True, hide_index=True)
 
         st.subheader("📋 Full Log")
         # Color result columns
