@@ -9,7 +9,7 @@ import io
 # ============================================================
 # CONFIG
 # ============================================================
-API_KEY         = '8ed699813ac311e0bba7011a68f42430'
+API_KEY         = st.secrets.get('ODDS_API_KEY', '8ed699813ac311e0bba7011a68f42430')
 TODAY           = datetime.date.today().strftime("%Y-%m-%d")
 SEASON          = datetime.date.today().year
 PREFERRED_BOOK  = 'draftkings'
