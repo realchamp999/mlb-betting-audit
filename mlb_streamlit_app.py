@@ -352,12 +352,14 @@ BACKTEST_COLS = [
 ]
 
 def load_backtest():
-    if os.path.isfile(BACKTEST_FILE):
-        return pd.read_csv(BACKTEST_FILE, dtype=str)
+    """Load from session state if available, else return empty."""
+    if "backtest_df" in st.session_state and not st.session_state.backtest_df.empty:
+        return st.session_state.backtest_df.copy()
     return pd.DataFrame(columns=BACKTEST_COLS)
 
 def save_backtest(df):
-    df.to_csv(BACKTEST_FILE, index=False)
+    """Save to session state."""
+    st.session_state.backtest_df = df.copy()
 
 def append_backtest(new_rows, df_existing):
     if not new_rows: return df_existing
@@ -368,6 +370,23 @@ def append_backtest(new_rows, df_existing):
     if not filtered: return df_existing
     new_df = pd.DataFrame(filtered, columns=BACKTEST_COLS)
     return pd.concat([df_existing, new_df], ignore_index=True)
+
+def df_to_csv_bytes(df):
+    return df.to_csv(index=False).encode("utf-8")
+
+def load_uploaded_csv(uploaded_file):
+    """Load a user-uploaded CSV into the session state backtest."""
+    try:
+        df = pd.read_csv(uploaded_file, dtype=str)
+        df.columns = [c.strip() for c in df.columns]
+        # Add any missing columns
+        for col in BACKTEST_COLS:
+            if col not in df.columns:
+                df[col] = ""
+        st.session_state.backtest_df = df
+        return df, f"✅ Loaded {len(df)} rows from uploaded CSV"
+    except Exception as e:
+        return pd.DataFrame(columns=BACKTEST_COLS), f"❌ Error loading CSV: {e}"
 
 # ============================================================
 # STREAMLIT APP
@@ -387,6 +406,14 @@ with st.expander("📊 Confidence Tier Key", expanded=False):
     ]
     for col, (label, edge, note, color) in zip(cols, tiers_info):
         col.markdown(f"**{label}**  \n{edge}  \n*{note}*")
+
+# --- Persistent CSV upload (shown at top, outside tabs) ---
+with st.expander("📂 Load Previous Backtest CSV", expanded=False):
+    st.caption("Upload your previously downloaded backtest CSV to restore history across sessions.")
+    uploaded_bt = st.file_uploader("Upload mlb_backtest_log.csv", type="csv", key="bt_upload")
+    if uploaded_bt:
+        df_loaded, msg = load_uploaded_csv(uploaded_bt)
+        st.info(msg)
 
 tab1, tab2, tab3 = st.tabs(["🎯 Today's Picks", "📈 Backtest Log", "✅ Update Results"])
 
@@ -570,18 +597,23 @@ with tab1:
                 with st.expander(f"Skipped — {len(skipped)} games"):
                     st.dataframe(pd.DataFrame(skipped)[["matchup","status"]], use_container_width=True)
 
-        # Save backtest
+        # Save backtest — only append genuinely new rows (skip live/final games)
         if backtest_rows:
-            df_bt   = load_backtest()
-            df_bt   = append_backtest(backtest_rows, df_bt)
+            df_bt  = load_backtest()
+            before = len(df_bt)
+            df_bt  = append_backtest(backtest_rows, df_bt)
             save_backtest(df_bt)
-            new_ct  = len([r for r in backtest_rows])
-            st.success(f"📝 {new_ct} games logged to backtest (duplicates auto-skipped)")
+            added  = len(df_bt) - before
+            st.success(f"📝 {added} new games added to backtest ({len(backtest_rows)-added} duplicates skipped)")
 
-            # Download button for CSV
-            csv_str = df_bt.to_csv(index=False)
-            st.download_button("⬇️ Download Backtest CSV", csv_str,
-                               file_name=BACKTEST_FILE, mime="text/csv")
+            st.info("⬇️ **Download your CSV now and save it to your phone/PC. Re-upload it next session to keep your history.**")
+            st.download_button(
+                label="⬇️ Download Backtest CSV",
+                data=df_to_csv_bytes(df_bt),
+                file_name=BACKTEST_FILE,
+                mime="text/csv",
+                type="primary"
+            )
 
 # ──────────────────────────────────────────────
 # TAB 2: BACKTEST LOG
@@ -589,7 +621,12 @@ with tab1:
 with tab2:
     df_bt = load_backtest()
     if df_bt.empty:
-        st.info("No backtest data yet — run Today's Picks first.")
+        st.info("No backtest data in memory.")
+        uploaded_b = st.file_uploader("Upload your backtest CSV to view history:", type="csv", key="log_upload")
+        if uploaded_b:
+            df_bt, msg = load_uploaded_csv(uploaded_b)
+            st.info(msg)
+            st.rerun()
     else:
         # Summary by tier
         st.subheader("📊 Performance by Tier")
@@ -641,13 +678,25 @@ with tab2:
 # ──────────────────────────────────────────────
 with tab3:
     st.subheader("✅ Auto-fill Results from MLB API")
+
+    # Must upload CSV first if session state is empty
+    if "backtest_df" not in st.session_state or st.session_state.backtest_df.empty:
+        st.warning("⚠️ No backtest data in memory. Upload your CSV first:")
+        uploaded_r = st.file_uploader("Upload mlb_backtest_log.csv", type="csv", key="results_upload")
+        if uploaded_r:
+            df_loaded, msg = load_uploaded_csv(uploaded_r)
+            st.info(msg)
+            st.rerun()
+    else:
+        st.success(f"✅ {len(st.session_state.backtest_df)} rows loaded in memory")
+
     update_date = st.date_input("Fill results for date:", value=datetime.date.today() - datetime.timedelta(days=1))
     update_date_str = update_date.strftime("%Y-%m-%d")
 
     if st.button("🔄 Fetch & Fill Results", type="primary"):
         df_bt = load_backtest()
         if df_bt.empty:
-            st.warning("No backtest data to update.")
+            st.warning("No backtest data to update. Please upload your CSV above.")
         else:
             with st.spinner(f"Fetching final scores for {update_date_str}..."):
                 scores = fetch_final_scores(update_date_str)
@@ -703,6 +752,11 @@ with tab3:
                     st.dataframe(updated[show_cols].style.apply(color_r, axis=None),
                                  use_container_width=True)
 
-                csv_str = df_bt.to_csv(index=False)
-                st.download_button("⬇️ Download Updated CSV", csv_str,
-                                   file_name=BACKTEST_FILE, mime="text/csv")
+                st.info("⬇️ **Download and save this updated CSV — upload it next time to keep your history.**")
+                st.download_button(
+                    label="⬇️ Download Updated CSV",
+                    data=df_to_csv_bytes(df_bt),
+                    file_name=BACKTEST_FILE,
+                    mime="text/csv",
+                    type="primary"
+                )
