@@ -665,17 +665,20 @@ with tab3:
                     if game_key not in scores: continue
 
                     sc = scores[game_key]
-                    df_bt.at[idx, "home_score"] = sc["home_score"]
-                    df_bt.at[idx, "away_score"] = sc["away_score"]
+                    df_bt.at[idx, "home_score"] = str(sc["home_score"])
+                    df_bt.at[idx, "away_score"] = str(sc["away_score"])
+
+                    h_sc = int(sc["home_score"])
+                    a_sc = int(sc["away_score"])
 
                     if str(row.get("result_side","")).strip() in ("","nan"):
-                        r = eval_side(row.get("side_pick",""), matchup, sc["home_score"], sc["away_score"])
-                        df_bt.at[idx, "result_side"] = r
+                        r = eval_side(row.get("side_pick",""), matchup, h_sc, a_sc)
+                        df_bt.at[idx, "result_side"] = str(r) if r else ""
                         if r: filled_s += 1
 
                     if str(row.get("result_total","")).strip() in ("","nan"):
-                        r = eval_total(row.get("tot_pick",""), sc["home_score"], sc["away_score"])
-                        df_bt.at[idx, "result_total"] = r
+                        r = eval_total(row.get("tot_pick",""), h_sc, a_sc)
+                        df_bt.at[idx, "result_total"] = str(r) if r else ""
                         if r: filled_t += 1
 
                 save_backtest(df_bt)
