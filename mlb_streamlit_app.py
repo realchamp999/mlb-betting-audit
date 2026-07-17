@@ -19,13 +19,10 @@ AVG_SP_INNINGS   = 5.5
 MARKET_SHRINKAGE = 0.30
 KELLY_FRAC       = 0.10
 
-# Calibration: scales run projections down to match market totals on average
-# FIP tends to overestimate runs — 0.82 brings avg projection in line with ~8.8 market avg
-# Adjust this after backtest shows systematic over/under projection
-TOTAL_CALIBRATION = 0.82
-
-# Minimum meaningful edge for totals — higher than sides since totals fire too easily
-TOTAL_MIN_EDGE   = 0.08   # must diverge >8% from market line after calibration
+# Calibration: scales run projections to match market totals on average
+# 1.027 verified against league avg FIP → produces ~8.8 avg projection matching market
+# Adjust after 4+ weeks of backtest if model shows systematic bias
+TOTAL_CALIBRATION = 1.027
 
 SIDE_TIERS = [
     (0.20, "STRONG",  "🔥🔥", 1.00, True),
