@@ -15,9 +15,17 @@ SEASON          = datetime.date.today().year
 PREFERRED_BOOK  = 'draftkings'
 BACKTEST_FILE   = "mlb_backtest_log.csv"
 OUTPUT_EXCEL    = "mlb_backtest_results.xlsx"
-AVG_SP_INNINGS  = 5.5
+AVG_SP_INNINGS   = 5.5
 MARKET_SHRINKAGE = 0.30
-KELLY_FRAC      = 0.10
+KELLY_FRAC       = 0.10
+
+# Calibration: scales run projections down to match market totals on average
+# FIP tends to overestimate runs — 0.82 brings avg projection in line with ~8.8 market avg
+# Adjust this after backtest shows systematic over/under projection
+TOTAL_CALIBRATION = 0.82
+
+# Minimum meaningful edge for totals — higher than sides since totals fire too easily
+TOTAL_MIN_EDGE   = 0.08   # must diverge >8% from market line after calibration
 
 SIDE_TIERS = [
     (0.20, "STRONG",  "🔥🔥", 1.00, True),
@@ -276,10 +284,15 @@ def project_total(h_siera, a_siera, h_off, a_off, h_bp, a_bp, pf, sp_inn=AVG_SP_
     bp_inn = 9.0 - sp_inn
     home_r = (siera_to_runs(a_siera, sp_inn) * h_off + siera_to_runs(a_bp, bp_inn) * h_off)
     away_r = (siera_to_runs(h_siera, sp_inn) * a_off + siera_to_runs(h_bp, bp_inn) * a_off)
-    return (home_r + away_r) * pf
+    # Apply calibration multiplier to correct for FIP systematic overestimation
+    return (home_r + away_r) * pf * TOTAL_CALIBRATION
 
 def blend(model_p, mkt_p, shrink=MARKET_SHRINKAGE):
     return (1 - shrink) * model_p + shrink * mkt_p
+
+def blend_side(model_p, mkt_p):
+    """Less shrinkage for sides — model has more signal on pitcher matchups."""
+    return blend(model_p, mkt_p, shrink=0.20)
 
 # ============================================================
 # RESULTS FETCHER
@@ -415,12 +428,41 @@ with st.expander("📂 Load Previous Backtest CSV", expanded=False):
         df_loaded, msg = load_uploaded_csv(uploaded_bt)
         st.info(msg)
 
-tab1, tab2, tab3 = st.tabs(["🎯 Today's Picks", "📈 Backtest Log", "✅ Update Results"])
+tab1, tab2, tab3, tab4 = st.tabs(["🎯 Today's Picks", "📈 Backtest Log", "✅ Update Results", "🔄 Backfill"])
 
 # ──────────────────────────────────────────────
 # TAB 1: TODAY'S PICKS
 # ──────────────────────────────────────────────
 with tab1:
+    # Warn if no CSV loaded — makes it hard to forget
+    if "backtest_df" not in st.session_state or st.session_state.backtest_df.empty:
+        st.warning(
+            "⚠️ **No backtest CSV loaded.** Upload your CSV first using the "
+            "'📂 Load Previous Backtest CSV' section above to avoid duplicates. "
+            "Skip this only if this is your very first run ever."
+        )
+    else:
+        row_ct  = len(st.session_state.backtest_df)
+        dates   = st.session_state.backtest_df["date"].nunique() if "date" in st.session_state.backtest_df.columns else 0
+        st.success(f"✅ CSV loaded — {row_ct} rows across {dates} day(s) in memory")
+
+    log_toggle = st.toggle("📝 Log to backtest CSV", value=True,
+                           help="Turn OFF when traveling — just shows picks without requiring a CSV upload")
+
+    if log_toggle:
+        if "backtest_df" not in st.session_state or st.session_state.backtest_df.empty:
+            st.warning(
+                "⚠️ **No backtest CSV loaded.** Upload your CSV first using the "
+                "'📂 Load Previous Backtest CSV' section above to avoid duplicates. "
+                "Skip this only if this is your very first run ever."
+            )
+        else:
+            row_ct = len(st.session_state.backtest_df)
+            dates  = st.session_state.backtest_df["date"].nunique() if "date" in st.session_state.backtest_df.columns else 0
+            st.success(f"✅ CSV loaded — {row_ct} rows across {dates} day(s) in memory")
+    else:
+        st.info("✈️ Travel mode — picks only, no CSV logging")
+
     col1, col2 = st.columns([3,1])
     run_btn     = col1.button("🔄 Run Today's Analysis", type="primary", use_container_width=True)
     refresh_btn = col2.button("♻️ Clear Cache", use_container_width=True)
@@ -489,7 +531,8 @@ with tab1:
             raw_prob_h = win_probability(h_siera, a_siera, h_off, a_off, h_bp, a_bp, pf)
             raw_mkt_h, raw_mkt_a = implied_prob(h_dec), implied_prob(a_dec)
             fair_h, fair_a = remove_vig(raw_mkt_h, raw_mkt_a)
-            prob_h = blend(raw_prob_h, fair_h)
+            # Use less shrinkage for sides (pitcher matchup model has real signal)
+            prob_h = blend_side(raw_prob_h, fair_h)
             prob_a = 1 - prob_h
 
             ev_h = prob_h - raw_mkt_h
@@ -597,15 +640,14 @@ with tab1:
                 with st.expander(f"Skipped — {len(skipped)} games"):
                     st.dataframe(pd.DataFrame(skipped)[["matchup","status"]], use_container_width=True)
 
-        # Save backtest — only append genuinely new rows (skip live/final games)
-        if backtest_rows:
+        # Save backtest — only when logging toggle is ON
+        if backtest_rows and log_toggle:
             df_bt  = load_backtest()
             before = len(df_bt)
             df_bt  = append_backtest(backtest_rows, df_bt)
             save_backtest(df_bt)
             added  = len(df_bt) - before
             st.success(f"📝 {added} new games added to backtest ({len(backtest_rows)-added} duplicates skipped)")
-
             st.info("⬇️ **Download your CSV now and save it to your phone/PC. Re-upload it next session to keep your history.**")
             st.download_button(
                 label="⬇️ Download Backtest CSV",
@@ -614,6 +656,8 @@ with tab1:
                 mime="text/csv",
                 type="primary"
             )
+        elif backtest_rows and not log_toggle:
+            st.info("✈️ Travel mode — picks shown above, nothing logged to CSV")
 
 # ──────────────────────────────────────────────
 # TAB 2: BACKTEST LOG
